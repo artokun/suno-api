@@ -7,7 +7,8 @@ import * as cookie from 'cookie';
 import { randomUUID } from 'node:crypto';
 import { Solver } from '@2captcha/captcha-solver';
 import { paramsCoordinates } from '@2captcha/captcha-solver/dist/structs/2captcha';
-import { BrowserContext, Page, Locator, chromium, firefox } from 'rebrowser-playwright-core';
+import { Page, Locator, chromium, firefox, BrowserContext } from "playwright-core";
+import chromiumAws from "@sparticuz/chromium";
 import { createCursor, Cursor } from 'ghost-cursor-playwright';
 import { promises as fs } from 'fs';
 import path from 'node:path';
@@ -74,7 +75,7 @@ class SunoApi {
     this.client.interceptors.request.use(config => {
       if (this.currentToken && !config.headers.Authorization)
         config.headers.Authorization = `Bearer ${this.currentToken}`;
-      const cookiesArray = Object.entries(this.cookies).map(([key, value]) => 
+      const cookiesArray = Object.entries(this.cookies).map(([key, value]) =>
         cookie.serialize(key, value as string)
       );
       config.headers.Cookie = cookiesArray.join('; ');
@@ -186,10 +187,10 @@ class SunoApi {
   /**
    * Clicks on a locator or XY vector. This method is made because of the difference between ghost-cursor-playwright and Playwright methods
    */
-  private async click(target: Locator|Page, position?: { x: number, y: number }): Promise<void> {
+  private async click(target: Locator | Page, position?: { x: number, y: number }): Promise<void> {
     if (this.ghostCursorEnabled) {
       let pos: any = isPage(target) ? { x: 0, y: 0 } : await target.boundingBox();
-      if (position) 
+      if (position)
         pos = {
           ...pos,
           x: pos.x + position.x,
@@ -230,7 +231,9 @@ class SunoApi {
    * @returns {BrowserContext}
    */
   private async launchBrowser(): Promise<BrowserContext> {
-    const args = [
+    const isDev = process.env.NODE_ENV === 'development';
+
+    const args: string[] = [
       '--disable-blink-features=AutomationControlled',
       '--disable-web-security',
       '--no-sandbox',
@@ -240,6 +243,11 @@ class SunoApi {
       '--disable-extensions',
       '--disable-infobars'
     ];
+
+    if (!isDev) {
+      args.push(...chromiumAws.args, "--disable-gpu");
+    }
+
     // Check for GPU acceleration, as it is recommended to turn it off for Docker
     if (yn(process.env.BROWSER_DISABLE_GPU, { default: false }))
       args.push('--enable-unsafe-swiftshader',
@@ -247,14 +255,17 @@ class SunoApi {
         '--disable-setuid-sandbox');
     const browser = await this.getBrowserType().launch({
       args,
-      headless: yn(process.env.BROWSER_HEADLESS, { default: true })
+      executablePath: isDev ? undefined : await chromiumAws.executablePath(),
+      headless: yn(process.env.BROWSER_HEADLESS, { default: true }),
+      chromiumSandbox: false
     });
-    const context = await browser.newContext({ userAgent: this.userAgent, locale: process.env.BROWSER_LOCALE, viewport: null });
+    const userAgent = isDev ? this.userAgent : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    const context = await browser.newContext({ userAgent, locale: process.env.BROWSER_LOCALE, viewport: null });
     const cookies = [];
     const lax: 'Lax' | 'Strict' | 'None' = 'Lax';
     cookies.push({
       name: '__session',
-      value: this.currentToken+'',
+      value: this.currentToken + '',
       domain: '.suno.com',
       path: '/',
       sameSite: lax
@@ -262,7 +273,7 @@ class SunoApi {
     for (const key in this.cookies) {
       cookies.push({
         name: key,
-        value: this.cookies[key]+'',
+        value: this.cookies[key] + '',
         domain: '.suno.com',
         path: '/',
         sameSite: lax
@@ -276,7 +287,7 @@ class SunoApi {
    * Checks for CAPTCHA verification and solves the CAPTCHA if needed
    * @returns {string|null} hCaptcha token. If no verification is required, returns null
    */
-  public async getCaptcha(): Promise<string|null> {
+  public async getCaptcha(): Promise<string | null> {
     if (!await this.captchaRequired())
       return null;
 
@@ -291,12 +302,12 @@ class SunoApi {
 
     if (this.ghostCursorEnabled)
       this.cursor = await createCursor(page);
-    
+
     logger.info('Triggering the CAPTCHA');
     try {
       await page.getByLabel('Close').click({ timeout: 2000 }); // close all popups
       // await this.click(page, { x: 318, y: 13 });
-    } catch(e) {}
+    } catch (e) { }
 
     const textarea = page.locator('.custom-textarea');
     await this.click(textarea);
@@ -330,14 +341,14 @@ class SunoApi {
               }
               captcha = await this.solver.coordinates(payload);
               break;
-            } catch(err: any) {
+            } catch (err: any) {
               logger.info(err.message);
               if (j != 2)
                 logger.info('Retrying...');
               else
                 throw err;
             }
-          } 
+          }
           if (drag) {
             const challengeBox = await challenge.boundingBox();
             if (challengeBox == null)
@@ -350,7 +361,7 @@ class SunoApi {
             }
             for (let i = 0; i < captcha.data.length; i += 2) {
               const data1 = captcha.data[i];
-              const data2 = captcha.data[i+1];
+              const data2 = captcha.data[i + 1];
               logger.info(JSON.stringify(data1) + JSON.stringify(data2));
               await page.mouse.move(challengeBox.x + +data1.x, challengeBox.y + +data1.y);
               await page.mouse.down();
@@ -372,7 +383,7 @@ class SunoApi {
               throw e;
           });
         }
-      } catch(e: any) {
+      } catch (e: any) {
         if (e.message.includes('been closed') // catch error when closing the browser
           || e.message == 'AbortError') // catch error when waitForRequests is aborted
           resolve();
@@ -393,7 +404,7 @@ class SunoApi {
           const request = route.request();
           this.currentToken = request.headers().authorization.split('Bearer ').pop();
           resolve(request.postDataJSON().token);
-        } catch(err) {
+        } catch (err) {
           reject(err);
         }
       });
@@ -550,20 +561,20 @@ class SunoApi {
     }
     logger.info(
       'generateSongs payload:\n' +
-        JSON.stringify(
-          {
-            prompt: prompt,
-            isCustom: isCustom,
-            tags: tags,
-            title: title,
-            make_instrumental: make_instrumental,
-            wait_audio: wait_audio,
-            negative_tags: negative_tags,
-            payload: payload
-          },
-          null,
-          2
-        )
+      JSON.stringify(
+        {
+          prompt: prompt,
+          isCustom: isCustom,
+          tags: tags,
+          title: title,
+          make_instrumental: make_instrumental,
+          wait_audio: wait_audio,
+          negative_tags: negative_tags,
+          payload: payload
+        },
+        null,
+        2
+      )
     );
     const response = await this.client.post(
       `${SunoApi.BASE_URL}/api/generate/v2/`,
